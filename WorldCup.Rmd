@@ -1,0 +1,239 @@
+---
+title: "Women's world cup 2023"
+author:
+  - Ian Hamilton
+  - Stefan Stein
+  - David Selby
+date: July 2023
+output:
+  html_document:
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(readxl)
+```
+
+
+
+```{r}
+First_round_odds <- read_excel("data/First round odds.xlsx") %>%
+  rename(
+    "odds_1" = "Home win",
+    "odds_draw" = "Draw",
+    "odds_2" = "Away win",
+    "TeamName1" = "Home",
+    "TeamName2" = "Away"
+  ) %>%
+  mutate(TeamName2 = ifelse(TeamName2 == "Republic of Ireland", "Ireland", TeamName2))%>%
+  mutate(
+    p_ij = 1 / odds_1,
+    p_draw = 1 / odds_draw,
+    p_ji = 1 / odds_2,
+    total_prob = p_ij + p_draw + p_ji
+  ) %>%
+  mutate(p_ij = p_ij / total_prob,
+         p_draw = p_draw / total_prob,
+         p_ji = p_ji / total_prob) %>%
+  select(-total_prob) %>%
+  mutate(logit_p_ij = log(p_ij / p_ji),
+         s_ij = p_ij / p_ji)
+```
+
+```{r}
+p_ij <- First_round_odds[1,"p_ij"]%>%as.numeric()
+p_draw <- First_round_odds[1,"p_draw"]%>%as.numeric()
+s_ij <- First_round_odds[1,"s_ij"]%>%as.numeric()
+```
+
+
+```{r}
+target_function_beat <- function(p_ij,s_ij,nu){
+  s_ij / (s_ij + 1 + nu*sqrt(s_ij)) - p_ij
+}
+target_function_draw <- function(p_draw,s_ij,nu){
+  nu*sqrt(s_ij) / (s_ij + 1 + nu*sqrt(s_ij)) - p_draw
+}
+root_beat <- uniroot(target_function_beat, p_ij=p_ij,s_ij=s_ij,interval = c(-1,1))
+root_draw <- uniroot(target_function_draw, p_draw=p_draw,s_ij=s_ij,interval = c(-1,1))
+nu_fn_beat <- function(p_ij, s_ij){
+  uniroot(target_function_beat, p_ij=p_ij,s_ij=s_ij,interval = c(-1,1))[['root']]
+}
+nu_fn_draw <- function(p_draw, s_ij){
+  uniroot(target_function_draw, p_draw=p_draw,s_ij=s_ij,interval = c(-1,1))[['root']]
+}
+```
+
+
+
+```{r}
+df <- First_round_odds %>%
+  rowwise() %>%
+  mutate(nu_beat = nu_fn_beat(p_ij,s_ij),
+         nu_draw = nu_fn_draw(p_draw,s_ij)) %>%
+  ungroup()
+df
+```
+
+```{r}
+summary(df$nu_beat)
+```
+
+```{r}
+# based on 10 matches
+odds_threshold <- 1.1
+df%>%filter(odds_1 >= odds_threshold,
+            odds_2 >= odds_threshold)%>%
+  pull(nu_beat)%>%
+  summary()
+```
+
+```{r}
+nu <- df%>%filter(odds_1 >= odds_threshold,
+            odds_2 >= odds_threshold)%>%
+  pull(nu_beat)%>%
+  summary()
+
+nu <- nu["Mean"]
+nu
+```
+
+
+
+```{r}
+# based on 7 matches
+odds_threshold <- 1.3
+df%>%filter(odds_1 >= odds_threshold,
+            odds_2 >= odds_threshold)%>%
+  pull(nu_beat)%>%
+  summary()
+```
+
+
+# Fifa rankings
+
+## Getting sigma
+
+```{r}
+Fifa_rating <- read_csv("data/Fifa rating.csv")
+```
+
+
+
+```{r}
+df <- df%>%
+  left_join(Fifa_rating%>%rename("F_i" = "Fifa rating"),by=c("TeamName1"="Team"))%>%
+  left_join(Fifa_rating%>%rename("F_j" = "Fifa rating"),by=c("TeamName2"="Team"))
+```
+
+```{r}
+df <- df%>%
+  mutate(sigma = (F_i - F_j) / log10((p_ji + 0.5*p_draw)/(p_ij + 0.5*p_draw)))
+```
+
+```{r}
+summary(df$sigma)
+```
+
+```{r}
+summary(df$sigma[1:15])
+```
+
+```{r}
+plot(df$sigma[1:15])
+```
+
+Here I am doing a regression of
+
+$$
+F_i - F_j = \log \left(\frac{p_{ji}+0.5 p_{i \sim j}}{p_{ij}+0.5p_{i \sim j}} \right)\sigma'
+$$
+to get an estimate of $\sigma'$.
+
+```{r}
+M <- df%>%
+  transmute(X = log10((p_ji + 0.5*p_draw)/(p_ij + 0.5*p_draw)),
+            Y = (F_i - F_j))
+
+M <- M[1:15,]
+
+lmfit <- lm(Y ~ -1 + X, data = M)
+sigma_dash <- coef(lmfit)
+summary(lmfit)
+```
+
+```{r}
+plot(lmfit$residuals)
+```
+
+## Getting alpha
+
+```{r}
+Group_Winner_odds <- read_excel("data/Group Winner odds.xlsx")
+```
+
+```{r}
+
+get_group_matches <- function(group){
+  Group_Winner_odds%>%
+  filter(Group == group)%>%
+  pull(Team)%>%
+  combn(m=2)%>%
+  t()%>%
+  as.data.frame()%>%
+  mutate(group = group)
+}
+groups <- LETTERS[1:8]
+
+group_matches <- lapply(groups, get_group_matches)%>%
+  do.call(rbind, .)%>%
+  rename("TeamName1" = "V1", "TeamName2" = "V2") %>%
+  rowwise() %>%
+  mutate(match_string = sort(c(TeamName1,TeamName2))%>%paste(collapse = "-"))%>%
+  ungroup()
+```
+
+```{r}
+
+find_sij <- function(alpha_ij, s_ij){
+  (s_ij + 0.5 * nu * sqrt(s_ij)) / (s_ij + 1 + nu*sqrt(s_ij)) - alpha_ij
+}
+sij_fn <- function(alpha_ij){
+  uniroot(find_sij, alpha_ij=alpha_ij,interval = c(0,10000))[['root']]
+}
+
+  
+estimated_df <- group_matches%>%
+  select(-c(TeamName1,TeamName2))%>%
+  left_join(
+    df%>%
+      rowwise()%>%
+      mutate(match_string = sort(c(TeamName1,TeamName2))%>%paste(collapse = "-"))%>%
+      ungroup(),
+    by = "match_string"
+  )%>%
+  rowwise()%>%
+  mutate(TeamName1 = ifelse(is.na(TeamName1), str_split(match_string, pattern="-", simplify = T)[1], TeamName1),
+         TeamName2 = ifelse(is.na(TeamName2), str_split(match_string, pattern="-", simplify = T)[2], TeamName2))%>%
+  ungroup()%>%
+  # drop Fifa rankings here to join them back for all matches in next step
+  select(-c(F_i,F_j, sigma))%>%
+  select(-starts_with("nu"))%>%
+  left_join(Fifa_rating%>%rename("F_i" = "Fifa rating"),by=c("TeamName1"="Team"))%>%
+  left_join(Fifa_rating%>%rename("F_j" = "Fifa rating"),by=c("TeamName2"="Team"))%>%
+  mutate(alpha_ij = 1 / (1 + 10^((F_i - F_j)/ sigma_dash))) %>%
+  rowwise()%>%
+  mutate(s_ij = ifelse(is.na(s_ij),sij_fn(alpha_ij),s_ij))%>%
+  ungroup()
+
+```
+
+```{r}
+estimated_df
+```
+
