@@ -588,4 +588,84 @@ results_list <- foreach(i = 1:4) %dopar% {
 
 
 
+```{r}
+total <- M*4
+paste0("results_10000/",loop_winners_files)%>%
+  sapply(read_csv, col_names = FALSE, simplify = FALSE) %>%
+    bind_rows()%>%
+  setNames("Team")%>%
+  group_by(Team)%>%
+  summarise(prob_win = n()/total)%>%
+  arrange(desc(prob_win))%>%
+  filter(prob_win > 0.001)%>%
+  ggplot(aes(x=prob_win,y=reorder(Team,prob_win)))+
+  geom_bar(stat = "identity") +
+  geom_text(aes(label=round(prob_win,3)),position=position_dodge(width=0.9),hjust=-0.2)+
+  labs(x="probability",
+       y="",
+       title = "Probability of winning the World Cup")+
+  xlim(0,0.5)
+```
+
+
+# Completing submission template
+
+```{r}
+
+predict_knockout <- function(team1, team2){
+  temp1 <- ifelse(team1 == "Republic of Ireland", "Ireland",
+                  ifelse(team1 == "China PR", "China",
+                         ifelse(team1 == "Korea Republic", "South Korea", team1)))
+  temp2 <- ifelse(team2 == "Republic of Ireland", "Ireland",
+                  ifelse(team2 == "China PR", "China",
+                         ifelse(team2 == "Korea Republic", "South Korea", team2)))
+  return(plogis(lambda[temp1] - lambda[temp2]))
+}
+
+output <- read_csv('submission-template.csv') %>%
+  select(-starts_with('p')) %>%
+  # Just use the market odds for the group stage
+  left_join(estimated_df%>%
+              mutate(TeamName1 = ifelse(TeamName1 == "Ireland", "Republic of Ireland",
+                                        ifelse(TeamName1 == "China", "China PR",
+                                               ifelse(TeamName1 == "South Korea", "Korea Republic", TeamName1))),
+                     TeamName2 = ifelse(TeamName2 == "Ireland", "Republic of Ireland",
+                                        ifelse(TeamName2 == "China", "China PR",
+                                               ifelse(TeamName2 == "South Korea", "Korea Republic", TeamName2))))%>%
+              select(group,
+                     team1 = TeamName1,
+                     team2 = TeamName2,
+                     p_team1_win = p_ij,
+                     p_team2_win = p_ji,
+                     p_draw) %>%
+              bind_rows(estimated_df %>%
+                          mutate(TeamName1 = ifelse(TeamName1 == "Ireland", "Republic of Ireland",
+                                                    ifelse(TeamName1 == "China", "China PR",
+                                                           ifelse(TeamName1 == "South Korea", "Korea Republic", TeamName1))),
+                                 TeamName2 = ifelse(TeamName2 == "Ireland", "Republic of Ireland",
+                                                    ifelse(TeamName2 == "China", "China PR",
+                                                           ifelse(TeamName2 == "South Korea", "Korea Republic", TeamName2))))%>%
+                          select(group,
+                                 team1 = TeamName2,
+                                 team2 = TeamName1,
+                                 p_team1_win = p_ji,
+                                 p_team2_win = p_ij,
+                                 p_draw))
+  ) %>%
+  # Predict knockout stage
+  rowwise()%>%
+  mutate(p_team1_win = ifelse(group == 'Knockout',
+                              predict_knockout(team1,team2),
+                              p_team1_win),
+         p_team2_win = ifelse(group == 'Knockout',
+                              predict_knockout(team2,team1),
+                              p_team2_win),
+         p_draw = ifelse(group == 'Knockout', 0, p_draw))%>%
+  ungroup()
+write.csv(output, 'output.csv')
+output
+```
+
+
+
 
